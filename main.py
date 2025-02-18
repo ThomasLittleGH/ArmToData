@@ -4,7 +4,6 @@ import math
 import numpy as np
 import time
 
-
 def calculate_angle(a, b, c):
     """
     Calculate the angle at point b (in degrees) given three points a, b, c.
@@ -20,7 +19,6 @@ def calculate_angle(a, b, c):
     cos_angle = dot_product / (magBA * magBC)
     cos_angle = max(min(cos_angle, 1.0), -1.0)
     return math.degrees(math.acos(cos_angle))
-
 
 def is_hand_closed(hand_landmarks, w, h):
     """
@@ -44,7 +42,6 @@ def is_hand_closed(hand_landmarks, w, h):
     ratio = dist_thumb_index / dist_index
     return ratio < 0.8
 
-
 def clamp_change(current, target, max_delta):
     """
     Limits the change from current to target by max_delta.
@@ -55,12 +52,11 @@ def clamp_change(current, target, max_delta):
     else:
         return target
 
-
 # Initialize MediaPipe.
 mp_drawing = mp.solutions.drawing_utils
 mp_holistic = mp.solutions.holistic
 
-# Open the HD camera (adjust index if needed) and set resolution.
+# Open your HD camera (adjust index if needed).
 cap = cv2.VideoCapture(1)
 
 # Initialize variables for arms/hands.
@@ -78,16 +74,15 @@ right_finger_angle = 0.0
 right_claw_state = "UNKNOWN"
 right_yaw = 0.0
 
-# Initialize smoothed motor values (for our 5 motors; Motor 1 is just a state).
-smoothed_motor6 = None
-smoothed_motor5 = None
-smoothed_motor4 = None
-smoothed_motor3 = None
-smoothed_motor2 = None
+# Initialize smoothed motor values for our 5 vertical motors.
+smoothed_motor6 = None  # Base (unused in simulation 2D)
+smoothed_motor5 = None  # Shoulder pitch
+smoothed_motor4 = None  # Elbow
+smoothed_motor3 = None  # Wrist pitch
+smoothed_motor2 = None  # Wrist yaw
 
 # Maximum speed in degrees per second.
 max_speed = 72  # deg/s
-
 last_time = time.time()
 
 with mp_holistic.Holistic(min_detection_confidence=0.5,
@@ -100,7 +95,7 @@ with mp_holistic.Holistic(min_detection_confidence=0.5,
         current_time = time.time()
         dt = current_time - last_time
         last_time = current_time
-        max_delta = max_speed * dt  # maximum change allowed per motor for this frame
+        max_delta = max_speed * dt  # max change per motor per frame
 
         # Process camera frame.
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -147,12 +142,11 @@ with mp_holistic.Holistic(min_detection_confidence=0.5,
             thumb_tip = (int(left_hand[4].x * w), int(left_hand[4].y * h))
             index_tip = (int(left_hand[8].x * w), int(left_hand[8].y * h))
             left_hand_yaw = math.degrees(math.atan2(index_tip[1] - thumb_tip[1],
-                                                    index_tip[0] - thumb_tip[0]))
+                                                     index_tip[0] - thumb_tip[0]))
             if left_hand_yaw < 0:
                 left_hand_yaw += 360
 
             left_index_mcp = (int(left_hand[5].x * w), int(left_hand[5].y * h))
-            left_wrist_angle = calculate_angle(left_elbow, left_wrist, left_index_mcp)
             left_index_pip = (int(left_hand[6].x * w), int(left_hand[6].y * h))
             left_index_tip = (int(left_hand[8].x * w), int(left_hand[8].y * h))
             left_finger_angle = calculate_angle(left_index_mcp, left_index_pip, left_index_tip)
@@ -164,12 +158,11 @@ with mp_holistic.Holistic(min_detection_confidence=0.5,
             thumb_tip = (int(right_hand[4].x * w), int(right_hand[4].y * h))
             index_tip = (int(right_hand[8].x * w), int(right_hand[8].y * h))
             right_hand_yaw = math.degrees(math.atan2(index_tip[1] - thumb_tip[1],
-                                                     index_tip[0] - thumb_tip[0]))
+                                                      index_tip[0] - thumb_tip[0]))
             if right_hand_yaw < 0:
                 right_hand_yaw += 360
 
             right_index_mcp = (int(right_hand[5].x * w), int(right_hand[5].y * h))
-            right_wrist_angle = calculate_angle(right_elbow, right_wrist, right_index_mcp)
             right_index_pip = (int(right_hand[6].x * w), int(right_hand[6].y * h))
             right_index_tip = (int(right_hand[8].x * w), int(right_hand[8].y * h))
             right_finger_angle = calculate_angle(right_index_mcp, right_index_pip, right_index_tip)
@@ -181,37 +174,32 @@ with mp_holistic.Holistic(min_detection_confidence=0.5,
             base_yaw = left_yaw
             shoulder_angle_sim = left_shoulder_angle
             elbow_angle_sim = left_elbow_angle
-            wrist_angle_sim = left_wrist_angle
+            wrist_angle_sim = 0  # fixed horizontal
             hand_yaw_sim = left_hand_yaw
             claw_state_sim = left_claw_state
         else:
             base_yaw = right_yaw
             shoulder_angle_sim = right_shoulder_angle
             elbow_angle_sim = right_elbow_angle
-            wrist_angle_sim = right_wrist_angle
+            wrist_angle_sim = 0
             hand_yaw_sim = right_hand_yaw
             claw_state_sim = right_claw_state
 
         # ---------------- Map to Mechanical Arm Motors ----------------
-        # Motor 6 (Base rotation): use main arm yaw (0-360°).
-        motor6 = base_yaw
-        # Motor 5 (Shoulder pitch): clamp between 35° and 145°.
-        motor5 = shoulder_angle_sim - 90
-        # Motor 4 (Elbow): use (180 - elbow_angle).
+        # For simulation, we ignore Motor 6 (base rotation) in the 2D chain.
+        # Motor 5 (Shoulder Pitch): For a horizontal arm (ideal shoulder angle = 90),
+        # we want motor5 = shoulder_angle - 90. Clamp negatives to 0.
+        motor5 = max(0, shoulder_angle_sim - 90)
+        # Motor 4 (Elbow): Use (180 - elbow_angle). If elbow is 180 (extended), motor4 = 0.
         motor4 = 180 - elbow_angle_sim
-        # Motor 3 (Wrist pitch): use (180 - wrist_angle).
-        motor3 = 180 - wrist_angle_sim
-        # Motor 2 (Wrist yaw): from hand yaw.
+        # Motor 3 (Wrist Pitch): Fixed horizontal, so set to 0.
+        motor3 = 0
+        # Motor 2 (Wrist Yaw): Use the hand yaw.
         motor2 = hand_yaw_sim
-        # Motor 1 (Claw): state ("OPEN" or "CLOSED").
+        # Motor 1 (Claw) remains as its state.
         # ----------------------------------------------------------------
 
         # ---------------- Limit the change rate for each motor ----------------
-        # For each motor, update the smoothed value by clamping its change to max_delta.
-        if smoothed_motor6 is None:
-            smoothed_motor6 = motor6
-        else:
-            smoothed_motor6 = clamp_change(smoothed_motor6, motor6, max_delta)
         if smoothed_motor5 is None:
             smoothed_motor5 = motor5
         else:
@@ -230,15 +218,11 @@ with mp_holistic.Holistic(min_detection_confidence=0.5,
             smoothed_motor2 = clamp_change(smoothed_motor2, motor2, max_delta)
         # ----------------------------------------------------------------
 
-        # ---------------- Draw Skeleton Lines on Camera Feed ----------------
-        # Re-implement the skeleton overlay (colored red/green) on the camera feed.
+        # ---------------- Draw Skeleton Overlay on Camera Feed ----------------
         if results.pose_landmarks:
             def to_pixel(idx):
                 return (int(results.pose_landmarks.landmark[idx].x * w),
                         int(results.pose_landmarks.landmark[idx].y * h))
-
-
-            # Use the average visibility scores to choose colors.
             left_score = (results.pose_landmarks.landmark[11].visibility +
                           results.pose_landmarks.landmark[13].visibility +
                           results.pose_landmarks.landmark[15].visibility) / 3.0
@@ -257,37 +241,41 @@ with mp_holistic.Holistic(min_detection_confidence=0.5,
         sim_width, sim_height = 640, 720
         sim_img = 255 * np.ones((sim_height, sim_width, 3), dtype=np.uint8)
 
+        # Do NOT draw hand skeleton on the simulation panel.
+        # (The hand skeleton drawing lines have been removed as requested.)
+
         # Define base point for simulation (centered near bottom).
         base_point = (sim_width // 2, sim_height - 50)
 
         # --- Compute Local Kinematic Chain (Side-View) ---
-        # Compute the chain in a local frame (base at (0,0)),
-        # then rotate by Motor 6 (base rotation) and translate to base_point.
-        L5 = 100  # Motor 5 (shoulder)
-        L4 = 80  # Motor 4 (elbow)
-        L3 = 60  # Motor 3 (wrist)
-        L2 = 40  # Motor 2 (wrist yaw)
+        # For the 2D simulation, we want "up" to be above the base.
+        # So, we subtract the local y coordinates from the base point.
+        L5 = 100  # Length for Motor 5 (shoulder)
+        L4 = 80   # Length for Motor 4 (elbow)
+        L3 = 60   # Length for Motor 3 (wrist)
+        L2 = 40   # Length for Motor 2 (wrist yaw)
 
         m5_rad = math.radians(smoothed_motor5)
         m4_rad = math.radians(smoothed_motor4)
         m3_rad = math.radians(smoothed_motor3)
         m2_rad = math.radians(smoothed_motor2)
-        m6_rad = math.radians(smoothed_motor6)
 
+        # Local coordinates (base at (0,0)); here, "right" is positive x and "up" is positive y.
         p0_local = np.array([0, 0])
-        p1_local = p0_local + np.array([L5 * math.cos(m5_rad), -L5 * math.sin(m5_rad)])
-        p2_local = p1_local + np.array([L4 * math.cos(m5_rad + m4_rad), -L4 * math.sin(m5_rad + m4_rad)])
-        p3_local = p2_local + np.array(
-            [L3 * math.cos(m5_rad + m4_rad + m3_rad), -L3 * math.sin(m5_rad + m4_rad + m3_rad)])
-        p4_local = p3_local + np.array([L2 * math.cos(m2_rad), -L2 * math.sin(m2_rad)])
+        p1_local = p0_local + np.array([L5 * math.cos(m5_rad), L5 * math.sin(m5_rad)])
+        p2_local = p1_local + np.array([L4 * math.cos(m5_rad + m4_rad), L4 * math.sin(m5_rad + m4_rad)])
+        p3_local = p2_local + np.array([L3 * math.cos(m5_rad + m4_rad + m3_rad), L3 * math.sin(m5_rad + m4_rad + m3_rad)])
+        p4_local = p3_local + np.array([L2 * math.cos(m2_rad), L2 * math.sin(m2_rad)])
 
-        R = np.array([[math.cos(m6_rad), -math.sin(m6_rad)],
-                      [math.sin(m6_rad), math.cos(m6_rad)]])
-        p0 = np.dot(R, p0_local) + np.array(base_point)
-        p1 = np.dot(R, p1_local) + np.array(base_point)
-        p2 = np.dot(R, p2_local) + np.array(base_point)
-        p3 = np.dot(R, p3_local) + np.array(base_point)
-        p4 = np.dot(R, p4_local) + np.array(base_point)
+        # Now, flip the y-axis so that "up" in simulation means smaller y values.
+        # We subtract the local y from the base point's y.
+        p0 = np.array([base_point[0] + p0_local[0], base_point[1] - p0_local[1]])
+        p1 = np.array([base_point[0] + p1_local[0], base_point[1] - p1_local[1]])
+        p2 = np.array([base_point[0] + p2_local[0], base_point[1] - p2_local[1]])
+        p3 = np.array([base_point[0] + p3_local[0], base_point[1] - p3_local[1]])
+        p4 = np.array([base_point[0] + p4_local[0], base_point[1] - p4_local[1]])
+
+        # Convert points to integer tuples.
         p0 = (int(p0[0]), int(p0[1]))
         p1 = (int(p1[0]), int(p1[1]))
         p2 = (int(p2[0]), int(p2[1]))
@@ -307,8 +295,6 @@ with mp_holistic.Holistic(min_detection_confidence=0.5,
         else:
             cv2.rectangle(sim_img, (p4[0] - 10, p4[1] - 10), (p4[0] + 10, p4[1] + 10), (0, 0, 255), -1)
 
-        cv2.putText(sim_img, f"M6 (Base): {int(smoothed_motor6)}", (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
         cv2.putText(sim_img, f"M5 (Shoulder): {int(smoothed_motor5)}", (10, 60),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
         cv2.putText(sim_img, f"M4 (Elbow): {int(smoothed_motor4)}", (10, 90),
