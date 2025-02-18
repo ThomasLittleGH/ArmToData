@@ -63,14 +63,14 @@ cap = cv2.VideoCapture(1)
 left_shoulder_angle = 0.0
 left_elbow_angle = 0.0
 left_wrist_angle = 0.0
-# Removed left_finger_angle as requested.
+left_finger_angle = 0.0
 left_claw_state = "UNKNOWN"
 left_yaw = 0.0
 
 right_shoulder_angle = 0.0
 right_elbow_angle = 0.0
 right_wrist_angle = 0.0
-# Removed right_finger_angle.
+right_finger_angle = 0.0
 right_claw_state = "UNKNOWN"
 right_yaw = 0.0
 
@@ -166,7 +166,6 @@ with mp_holistic.Holistic(min_detection_confidence=0.5,
             else:
                 left_wrist_pitch = 0
 
-            # Removed finger tilt calculation for left hand.
             left_claw_state = "CLOSED" if is_hand_closed(left_hand, w, h) else "OPEN"
 
         right_hand_yaw = 0
@@ -194,7 +193,6 @@ with mp_holistic.Holistic(min_detection_confidence=0.5,
             else:
                 right_wrist_pitch = 0
 
-            # Removed finger tilt calculation for right hand.
             right_claw_state = "CLOSED" if is_hand_closed(right_hand, w, h) else "OPEN"
         # ----------------------------------------------------------------
 
@@ -203,7 +201,7 @@ with mp_holistic.Holistic(min_detection_confidence=0.5,
             base_yaw = left_yaw
             shoulder_angle_sim = left_shoulder_angle
             elbow_angle_sim = left_elbow_angle
-            wrist_angle_sim = left_wrist_pitch  # now using computed wrist pitch
+            wrist_angle_sim = left_wrist_pitch  # using computed wrist pitch
             hand_yaw_sim = left_hand_yaw
             claw_state_sim = left_claw_state
         else:
@@ -223,8 +221,8 @@ with mp_holistic.Holistic(min_detection_confidence=0.5,
         motor4 = 180 - elbow_angle_sim
         # Motor 3 (Wrist Pitch): Now using the computed wrist pitch.
         motor3 = wrist_angle_sim
-        # Motor 2 (Wrist Yaw): Use the hand yaw.
-        motor2 = hand_yaw_sim
+        # Motor 2 (Wrist Yaw): Disable motor 2 by setting it to 0.
+        motor2 = 0
         # Motor 1 (Claw) remains as its state.
         # ----------------------------------------------------------------
 
@@ -270,7 +268,7 @@ with mp_holistic.Holistic(min_detection_confidence=0.5,
         sim_width, sim_height = 640, 720
         sim_img = 255 * np.ones((sim_height, sim_width, 3), dtype=np.uint8)
 
-        # Do NOT draw hand skeleton on the simulation panel.
+        # Do NOT draw hand skeleton on simulation panel.
 
         # Define base point for simulation (centered near bottom).
         base_point = (sim_width // 2, sim_height - 50)
@@ -280,19 +278,19 @@ with mp_holistic.Holistic(min_detection_confidence=0.5,
         L5 = 100  # Length for Motor 5 (shoulder)
         L4 = 80   # Length for Motor 4 (elbow)
         L3 = 60   # Length for Motor 3 (wrist)
-        L2 = 40   # Length for Motor 2 (wrist yaw)
+        L2 = 0    # Disable Motor 2 by setting its segment length to 0.
 
         m5_rad = math.radians(smoothed_motor5)
         m4_rad = math.radians(smoothed_motor4)
         m3_rad = math.radians(smoothed_motor3)
-        m2_rad = math.radians(smoothed_motor2)
+        # m2_rad is not used since L2=0.
 
-        # Local coordinates (base at (0,0)); here, "right" is positive x and "up" is positive y.
+        # Local coordinates (base at (0,0)); "right" is positive x and "up" is positive y.
         p0_local = np.array([0, 0])
         p1_local = p0_local + np.array([L5 * math.cos(m5_rad), L5 * math.sin(m5_rad)])
         p2_local = p1_local + np.array([L4 * math.cos(m5_rad + m4_rad), L4 * math.sin(m5_rad + m4_rad)])
         p3_local = p2_local + np.array([L3 * math.cos(m5_rad + m4_rad + m3_rad), L3 * math.sin(m5_rad + m4_rad + m3_rad)])
-        p4_local = p3_local + np.array([L2 * math.cos(m2_rad), L2 * math.sin(m2_rad)])
+        p4_local = p3_local + np.array([L2 * math.cos(0), L2 * math.sin(0)])  # effectively p4_local = p3_local
 
         # Now, flip the y-axis so that "up" means smaller y.
         p0 = np.array([base_point[0] + p0_local[0], base_point[1] - p0_local[1]])
