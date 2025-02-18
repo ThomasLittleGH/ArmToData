@@ -12,8 +12,8 @@ def calculate_angle(a, b, c):
     BA = (a[0] - b[0], a[1] - b[1])
     BC = (c[0] - b[0], c[1] - b[1])
     dot_product = BA[0] * BC[0] + BA[1] * BC[1]
-    magBA = math.sqrt(BA[0]**2 + BA[1]**2)
-    magBC = math.sqrt(BC[0]**2 + BC[1]**2)
+    magBA = math.sqrt(BA[0] ** 2 + BA[1] ** 2)
+    magBC = math.sqrt(BC[0] ** 2 + BC[1] ** 2)
     if magBA * magBC == 0:
         return 0.0
     cos_angle = dot_product / (magBA * magBC)
@@ -33,10 +33,10 @@ def is_hand_closed(hand_landmarks, w, h):
     index_tip_xy = (int(index_tip.x * w), int(index_tip.y * h))
     index_mcp_xy = (int(index_mcp.x * w), int(index_mcp.y * h))
 
-    dist_thumb_index = math.sqrt((thumb_tip_xy[0] - index_tip_xy[0])**2 +
-                                 (thumb_tip_xy[1] - index_tip_xy[1])**2)
-    dist_index = math.sqrt((index_tip_xy[0] - index_mcp_xy[0])**2 +
-                           (index_tip_xy[1] - index_mcp_xy[1])**2)
+    dist_thumb_index = math.sqrt((thumb_tip_xy[0] - index_tip_xy[0]) ** 2 +
+                                 (thumb_tip_xy[1] - index_tip_xy[1]) ** 2)
+    dist_index = math.sqrt((index_tip_xy[0] - index_mcp_xy[0]) ** 2 +
+                           (index_tip_xy[1] - index_mcp_xy[1]) ** 2)
     if dist_index == 0:
         return False
     ratio = dist_thumb_index / dist_index
@@ -63,14 +63,14 @@ cap = cv2.VideoCapture(1)
 left_shoulder_angle = 0.0
 left_elbow_angle = 0.0
 left_wrist_angle = 0.0
-left_finger_angle = 0.0
+# Removed left_finger_angle as requested.
 left_claw_state = "UNKNOWN"
 left_yaw = 0.0
 
 right_shoulder_angle = 0.0
 right_elbow_angle = 0.0
 right_wrist_angle = 0.0
-right_finger_angle = 0.0
+# Removed right_finger_angle.
 right_claw_state = "UNKNOWN"
 right_yaw = 0.0
 
@@ -99,7 +99,7 @@ with mp_holistic.Holistic(min_detection_confidence=0.5,
         current_time = time.time()
         dt = current_time - last_time
         last_time = current_time
-        max_delta = max_speed * dt  # maximum change allowed per motor per frame
+        max_delta = max_speed * dt  # max change per motor per frame
 
         # Process camera frame.
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -140,7 +140,6 @@ with mp_holistic.Holistic(min_detection_confidence=0.5,
         # ----------------------------------------------------------------
 
         # ---------------- Process Hand Landmarks ----------------
-        # For wrist yaw and claw state, we already process hand landmarks.
         left_hand_yaw = 0
         if results.left_hand_landmarks:
             left_hand = results.left_hand_landmarks.landmark
@@ -151,7 +150,7 @@ with mp_holistic.Holistic(min_detection_confidence=0.5,
             if left_hand_yaw < 0:
                 left_hand_yaw += 360
 
-            # Compute wrist pitch using middle finger tip (landmark 12).
+            # Compute wrist pitch using the middle finger tip (landmark 12).
             if len(left_hand) >= 13:
                 left_middle_tip = (int(left_hand[12].x * w), int(left_hand[12].y * h))
                 forearm_vec = (left_wrist[0] - left_elbow[0], left_wrist[1] - left_elbow[1])
@@ -167,10 +166,7 @@ with mp_holistic.Holistic(min_detection_confidence=0.5,
             else:
                 left_wrist_pitch = 0
 
-            left_index_mcp = (int(left_hand[5].x * w), int(left_hand[5].y * h))
-            left_index_pip = (int(left_hand[6].x * w), int(left_hand[6].y * h))
-            left_index_tip = (int(left_hand[8].x * w), int(left_hand[8].y * h))
-            left_finger_angle = calculate_angle(left_index_mcp, left_index_pip, left_index_tip)
+            # Removed finger tilt calculation for left hand.
             left_claw_state = "CLOSED" if is_hand_closed(left_hand, w, h) else "OPEN"
 
         right_hand_yaw = 0
@@ -198,10 +194,7 @@ with mp_holistic.Holistic(min_detection_confidence=0.5,
             else:
                 right_wrist_pitch = 0
 
-            right_index_mcp = (int(right_hand[5].x * w), int(right_hand[5].y * h))
-            right_index_pip = (int(right_hand[6].x * w), int(right_hand[6].y * h))
-            right_index_tip = (int(right_hand[8].x * w), int(right_hand[8].y * h))
-            right_finger_angle = calculate_angle(right_index_mcp, right_index_pip, right_index_tip)
+            # Removed finger tilt calculation for right hand.
             right_claw_state = "CLOSED" if is_hand_closed(right_hand, w, h) else "OPEN"
         # ----------------------------------------------------------------
 
@@ -277,7 +270,7 @@ with mp_holistic.Holistic(min_detection_confidence=0.5,
         sim_width, sim_height = 640, 720
         sim_img = 255 * np.ones((sim_height, sim_width, 3), dtype=np.uint8)
 
-        # Do NOT draw hand skeleton on simulation panel.
+        # Do NOT draw hand skeleton on the simulation panel.
 
         # Define base point for simulation (centered near bottom).
         base_point = (sim_width // 2, sim_height - 50)
