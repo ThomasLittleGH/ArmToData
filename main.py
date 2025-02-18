@@ -12,8 +12,8 @@ def calculate_angle(a, b, c):
     BA = (a[0] - b[0], a[1] - b[1])
     BC = (c[0] - b[0], c[1] - b[1])
     dot_product = BA[0] * BC[0] + BA[1] * BC[1]
-    magBA = math.sqrt(BA[0] ** 2 + BA[1] ** 2)
-    magBC = math.sqrt(BC[0] ** 2 + BC[1] ** 2)
+    magBA = math.sqrt(BA[0]**2 + BA[1]**2)
+    magBC = math.sqrt(BC[0]**2 + BC[1]**2)
     if magBA * magBC == 0:
         return 0.0
     cos_angle = dot_product / (magBA * magBC)
@@ -33,10 +33,10 @@ def is_hand_closed(hand_landmarks, w, h):
     index_tip_xy = (int(index_tip.x * w), int(index_tip.y * h))
     index_mcp_xy = (int(index_mcp.x * w), int(index_mcp.y * h))
 
-    dist_thumb_index = math.sqrt((thumb_tip_xy[0] - index_tip_xy[0]) ** 2 +
-                                 (thumb_tip_xy[1] - index_tip_xy[1]) ** 2)
-    dist_index = math.sqrt((index_tip_xy[0] - index_mcp_xy[0]) ** 2 +
-                           (index_tip_xy[1] - index_mcp_xy[1]) ** 2)
+    dist_thumb_index = math.sqrt((thumb_tip_xy[0] - index_tip_xy[0])**2 +
+                                 (thumb_tip_xy[1] - index_tip_xy[1])**2)
+    dist_index = math.sqrt((index_tip_xy[0] - index_mcp_xy[0])**2 +
+                           (index_tip_xy[1] - index_mcp_xy[1])**2)
     if dist_index == 0:
         return False
     ratio = dist_thumb_index / dist_index
@@ -74,6 +74,10 @@ right_finger_angle = 0.0
 right_claw_state = "UNKNOWN"
 right_yaw = 0.0
 
+# We'll also compute wrist pitch from the hand (using the middle finger tip).
+left_wrist_pitch = 0.0
+right_wrist_pitch = 0.0
+
 # Initialize smoothed motor values for our 5 vertical motors.
 smoothed_motor6 = None  # Base (unused in simulation 2D)
 smoothed_motor5 = None  # Shoulder pitch
@@ -95,7 +99,7 @@ with mp_holistic.Holistic(min_detection_confidence=0.5,
         current_time = time.time()
         dt = current_time - last_time
         last_time = current_time
-        max_delta = max_speed * dt  # max change per motor per frame
+        max_delta = max_speed * dt  # maximum change allowed per motor per frame
 
         # Process camera frame.
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -136,6 +140,7 @@ with mp_holistic.Holistic(min_detection_confidence=0.5,
         # ----------------------------------------------------------------
 
         # ---------------- Process Hand Landmarks ----------------
+        # For wrist yaw and claw state, we already process hand landmarks.
         left_hand_yaw = 0
         if results.left_hand_landmarks:
             left_hand = results.left_hand_landmarks.landmark
@@ -145,6 +150,22 @@ with mp_holistic.Holistic(min_detection_confidence=0.5,
                                                      index_tip[0] - thumb_tip[0]))
             if left_hand_yaw < 0:
                 left_hand_yaw += 360
+
+            # Compute wrist pitch using middle finger tip (landmark 12).
+            if len(left_hand) >= 13:
+                left_middle_tip = (int(left_hand[12].x * w), int(left_hand[12].y * h))
+                forearm_vec = (left_wrist[0] - left_elbow[0], left_wrist[1] - left_elbow[1])
+                hand_vec = (left_middle_tip[0] - left_wrist[0], left_middle_tip[1] - left_wrist[1])
+                norm_forearm = math.sqrt(forearm_vec[0]**2 + forearm_vec[1]**2)
+                norm_hand = math.sqrt(hand_vec[0]**2 + hand_vec[1]**2)
+                if norm_forearm * norm_hand != 0:
+                    cos_angle = (forearm_vec[0]*hand_vec[0] + forearm_vec[1]*hand_vec[1]) / (norm_forearm * norm_hand)
+                    cos_angle = max(min(cos_angle, 1.0), -1.0)
+                    left_wrist_pitch = math.degrees(math.acos(cos_angle))
+                else:
+                    left_wrist_pitch = 0
+            else:
+                left_wrist_pitch = 0
 
             left_index_mcp = (int(left_hand[5].x * w), int(left_hand[5].y * h))
             left_index_pip = (int(left_hand[6].x * w), int(left_hand[6].y * h))
@@ -162,6 +183,21 @@ with mp_holistic.Holistic(min_detection_confidence=0.5,
             if right_hand_yaw < 0:
                 right_hand_yaw += 360
 
+            if len(right_hand) >= 13:
+                right_middle_tip = (int(right_hand[12].x * w), int(right_hand[12].y * h))
+                forearm_vec = (right_wrist[0] - right_elbow[0], right_wrist[1] - right_elbow[1])
+                hand_vec = (right_middle_tip[0] - right_wrist[0], right_middle_tip[1] - right_wrist[1])
+                norm_forearm = math.sqrt(forearm_vec[0]**2 + forearm_vec[1]**2)
+                norm_hand = math.sqrt(hand_vec[0]**2 + hand_vec[1]**2)
+                if norm_forearm * norm_hand != 0:
+                    cos_angle = (forearm_vec[0]*hand_vec[0] + forearm_vec[1]*hand_vec[1]) / (norm_forearm * norm_hand)
+                    cos_angle = max(min(cos_angle, 1.0), -1.0)
+                    right_wrist_pitch = math.degrees(math.acos(cos_angle))
+                else:
+                    right_wrist_pitch = 0
+            else:
+                right_wrist_pitch = 0
+
             right_index_mcp = (int(right_hand[5].x * w), int(right_hand[5].y * h))
             right_index_pip = (int(right_hand[6].x * w), int(right_hand[6].y * h))
             right_index_tip = (int(right_hand[8].x * w), int(right_hand[8].y * h))
@@ -174,14 +210,14 @@ with mp_holistic.Holistic(min_detection_confidence=0.5,
             base_yaw = left_yaw
             shoulder_angle_sim = left_shoulder_angle
             elbow_angle_sim = left_elbow_angle
-            wrist_angle_sim = 0  # fixed horizontal
+            wrist_angle_sim = left_wrist_pitch  # now using computed wrist pitch
             hand_yaw_sim = left_hand_yaw
             claw_state_sim = left_claw_state
         else:
             base_yaw = right_yaw
             shoulder_angle_sim = right_shoulder_angle
             elbow_angle_sim = right_elbow_angle
-            wrist_angle_sim = 0
+            wrist_angle_sim = right_wrist_pitch
             hand_yaw_sim = right_hand_yaw
             claw_state_sim = right_claw_state
 
@@ -192,8 +228,8 @@ with mp_holistic.Holistic(min_detection_confidence=0.5,
         motor5 = max(0, shoulder_angle_sim - 90)
         # Motor 4 (Elbow): Use (180 - elbow_angle). If elbow is 180 (extended), motor4 = 0.
         motor4 = 180 - elbow_angle_sim
-        # Motor 3 (Wrist Pitch): Fixed horizontal, so set to 0.
-        motor3 = 0
+        # Motor 3 (Wrist Pitch): Now using the computed wrist pitch.
+        motor3 = wrist_angle_sim
         # Motor 2 (Wrist Yaw): Use the hand yaw.
         motor2 = hand_yaw_sim
         # Motor 1 (Claw) remains as its state.
@@ -241,15 +277,13 @@ with mp_holistic.Holistic(min_detection_confidence=0.5,
         sim_width, sim_height = 640, 720
         sim_img = 255 * np.ones((sim_height, sim_width, 3), dtype=np.uint8)
 
-        # Do NOT draw hand skeleton on the simulation panel.
-        # (The hand skeleton drawing lines have been removed as requested.)
+        # Do NOT draw hand skeleton on simulation panel.
 
         # Define base point for simulation (centered near bottom).
         base_point = (sim_width // 2, sim_height - 50)
 
         # --- Compute Local Kinematic Chain (Side-View) ---
-        # For the 2D simulation, we want "up" to be above the base.
-        # So, we subtract the local y coordinates from the base point.
+        # In this model, upward in the simulation corresponds to decreasing y values.
         L5 = 100  # Length for Motor 5 (shoulder)
         L4 = 80   # Length for Motor 4 (elbow)
         L3 = 60   # Length for Motor 3 (wrist)
@@ -267,15 +301,13 @@ with mp_holistic.Holistic(min_detection_confidence=0.5,
         p3_local = p2_local + np.array([L3 * math.cos(m5_rad + m4_rad + m3_rad), L3 * math.sin(m5_rad + m4_rad + m3_rad)])
         p4_local = p3_local + np.array([L2 * math.cos(m2_rad), L2 * math.sin(m2_rad)])
 
-        # Now, flip the y-axis so that "up" in simulation means smaller y values.
-        # We subtract the local y from the base point's y.
+        # Now, flip the y-axis so that "up" means smaller y.
         p0 = np.array([base_point[0] + p0_local[0], base_point[1] - p0_local[1]])
         p1 = np.array([base_point[0] + p1_local[0], base_point[1] - p1_local[1]])
         p2 = np.array([base_point[0] + p2_local[0], base_point[1] - p2_local[1]])
         p3 = np.array([base_point[0] + p3_local[0], base_point[1] - p3_local[1]])
         p4 = np.array([base_point[0] + p4_local[0], base_point[1] - p4_local[1]])
 
-        # Convert points to integer tuples.
         p0 = (int(p0[0]), int(p0[1]))
         p1 = (int(p1[0]), int(p1[1]))
         p2 = (int(p2[0]), int(p2[1]))
