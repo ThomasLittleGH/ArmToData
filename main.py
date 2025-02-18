@@ -1,6 +1,8 @@
 import cv2
 import mediapipe as mp
 import math
+import numpy as np
+import time
 
 
 def calculate_angle(a, b, c):
@@ -16,7 +18,6 @@ def calculate_angle(a, b, c):
     if magBA * magBC == 0:
         return 0.0
     cos_angle = dot_product / (magBA * magBC)
-    # Clamp due to floating point errors.
     cos_angle = max(min(cos_angle, 1.0), -1.0)
     return math.degrees(math.acos(cos_angle))
 
@@ -24,8 +25,7 @@ def calculate_angle(a, b, c):
 def is_hand_closed(hand_landmarks, w, h):
     """
     Determine if the hand is closed using a relative measure.
-    We compare the distance between the thumb tip and index tip to the distance between
-    the index MCP and index tip. If the ratio is less than 0.8, we consider the hand closed.
+    Compare the distance between thumb tip and index tip vs. index MCP to index tip.
     """
     thumb_tip = hand_landmarks[4]
     index_tip = hand_landmarks[8]
@@ -35,7 +35,6 @@ def is_hand_closed(hand_landmarks, w, h):
     index_tip_xy = (int(index_tip.x * w), int(index_tip.y * h))
     index_mcp_xy = (int(index_mcp.x * w), int(index_mcp.y * h))
 
-    # Compute Euclidean distances.
     dist_thumb_index = math.sqrt((thumb_tip_xy[0] - index_tip_xy[0]) ** 2 +
                                  (thumb_tip_xy[1] - index_tip_xy[1]) ** 2)
     dist_index = math.sqrt((index_tip_xy[0] - index_mcp_xy[0]) ** 2 +
@@ -46,14 +45,25 @@ def is_hand_closed(hand_landmarks, w, h):
     return ratio < 0.8
 
 
+def clamp_change(current, target, max_delta):
+    """
+    Limits the change from current to target by max_delta.
+    """
+    delta = target - current
+    if abs(delta) > max_delta:
+        return current + math.copysign(max_delta, delta)
+    else:
+        return target
+
+
 # Initialize MediaPipe.
 mp_drawing = mp.solutions.drawing_utils
 mp_holistic = mp.solutions.holistic
 
-# Open your HD camera and set resolution to HD.
+# Open the HD camera (adjust index if needed) and set resolution.
 cap = cv2.VideoCapture(1)
 
-# Initialize variables for left and right arms/hands.
+# Initialize variables for arms/hands.
 left_shoulder_angle = 0.0
 left_elbow_angle = 0.0
 left_wrist_angle = 0.0
@@ -68,6 +78,18 @@ right_finger_angle = 0.0
 right_claw_state = "UNKNOWN"
 right_yaw = 0.0
 
+# Initialize smoothed motor values (for our 5 motors; Motor 1 is just a state).
+smoothed_motor6 = None
+smoothed_motor5 = None
+smoothed_motor4 = None
+smoothed_motor3 = None
+smoothed_motor2 = None
+
+# Maximum speed in degrees per second.
+max_speed = 72  # deg/s
+
+last_time = time.time()
+
 with mp_holistic.Holistic(min_detection_confidence=0.5,
                           min_tracking_confidence=0.5) as holistic:
     while True:
@@ -75,7 +97,12 @@ with mp_holistic.Holistic(min_detection_confidence=0.5,
         if not ret:
             break
 
-        # Convert frame to RGB and process with MediaPipe.
+        current_time = time.time()
+        dt = current_time - last_time
+        last_time = current_time
+        max_delta = max_speed * dt  # maximum change allowed per motor for this frame
+
+        # Process camera frame.
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = holistic.process(rgb_frame)
         h, w, _ = frame.shape
@@ -84,128 +111,219 @@ with mp_holistic.Holistic(min_detection_confidence=0.5,
         if results.pose_landmarks:
             landmarks = results.pose_landmarks.landmark
 
-            # ----- Left Arm -----
+            # Left Arm.
             left_shoulder = (int(landmarks[11].x * w), int(landmarks[11].y * h))
             left_elbow = (int(landmarks[13].x * w), int(landmarks[13].y * h))
             left_wrist = (int(landmarks[15].x * w), int(landmarks[15].y * h))
             left_hip = (int(landmarks[23].x * w), int(landmarks[23].y * h))
             left_elbow_angle = calculate_angle(left_shoulder, left_elbow, left_wrist)
             left_shoulder_angle = calculate_angle(left_hip, left_shoulder, left_elbow)
-            # Compute left yaw: angle from shoulder to wrist relative to horizontal.
             left_yaw = math.degrees(math.atan2(left_wrist[1] - left_shoulder[1],
                                                left_wrist[0] - left_shoulder[0]))
             if left_yaw < 0:
                 left_yaw += 360
 
-            # ----- Right Arm -----
+            # Right Arm.
             right_shoulder = (int(landmarks[12].x * w), int(landmarks[12].y * h))
             right_elbow = (int(landmarks[14].x * w), int(landmarks[14].y * h))
             right_wrist = (int(landmarks[16].x * w), int(landmarks[16].y * h))
             right_hip = (int(landmarks[24].x * w), int(landmarks[24].y * h))
             right_elbow_angle = calculate_angle(right_shoulder, right_elbow, right_wrist)
             right_shoulder_angle = calculate_angle(right_hip, right_shoulder, right_elbow)
-            # Compute right yaw.
             right_yaw = math.degrees(math.atan2(right_wrist[1] - right_shoulder[1],
                                                 right_wrist[0] - right_shoulder[0]))
             if right_yaw < 0:
                 right_yaw += 360
 
-            # Determine "visibility score" for each arm (average of shoulder, elbow, wrist visibilities).
             left_score = (landmarks[11].visibility + landmarks[13].visibility + landmarks[15].visibility) / 3.0
             right_score = (landmarks[12].visibility + landmarks[14].visibility + landmarks[16].visibility) / 3.0
-            # Choose the main arm.
-            if left_score >= right_score:
-                main_arm = 'left'
-            else:
-                main_arm = 'right'
+            main_arm = 'left' if left_score >= right_score else 'right'
         # ----------------------------------------------------------------
 
         # ---------------- Process Hand Landmarks ----------------
-        # Process left hand.
+        left_hand_yaw = 0
         if results.left_hand_landmarks:
             left_hand = results.left_hand_landmarks.landmark
+            thumb_tip = (int(left_hand[4].x * w), int(left_hand[4].y * h))
+            index_tip = (int(left_hand[8].x * w), int(left_hand[8].y * h))
+            left_hand_yaw = math.degrees(math.atan2(index_tip[1] - thumb_tip[1],
+                                                    index_tip[0] - thumb_tip[0]))
+            if left_hand_yaw < 0:
+                left_hand_yaw += 360
+
             left_index_mcp = (int(left_hand[5].x * w), int(left_hand[5].y * h))
-            # Update left wrist angle using hand data.
             left_wrist_angle = calculate_angle(left_elbow, left_wrist, left_index_mcp)
-            # Finger angle using index finger landmarks (MCP, PIP, TIP).
             left_index_pip = (int(left_hand[6].x * w), int(left_hand[6].y * h))
             left_index_tip = (int(left_hand[8].x * w), int(left_hand[8].y * h))
             left_finger_angle = calculate_angle(left_index_mcp, left_index_pip, left_index_tip)
             left_claw_state = "CLOSED" if is_hand_closed(left_hand, w, h) else "OPEN"
 
-        # Process right hand.
+        right_hand_yaw = 0
         if results.right_hand_landmarks:
             right_hand = results.right_hand_landmarks.landmark
+            thumb_tip = (int(right_hand[4].x * w), int(right_hand[4].y * h))
+            index_tip = (int(right_hand[8].x * w), int(right_hand[8].y * h))
+            right_hand_yaw = math.degrees(math.atan2(index_tip[1] - thumb_tip[1],
+                                                     index_tip[0] - thumb_tip[0]))
+            if right_hand_yaw < 0:
+                right_hand_yaw += 360
+
             right_index_mcp = (int(right_hand[5].x * w), int(right_hand[5].y * h))
             right_wrist_angle = calculate_angle(right_elbow, right_wrist, right_index_mcp)
             right_index_pip = (int(right_hand[6].x * w), int(right_hand[6].y * h))
             right_index_tip = (int(right_hand[8].x * w), int(right_hand[8].y * h))
             right_finger_angle = calculate_angle(right_index_mcp, right_index_pip, right_index_tip)
             right_claw_state = "CLOSED" if is_hand_closed(right_hand, w, h) else "OPEN"
-        # ----------------------------------------------------------
+        # ----------------------------------------------------------------
 
-        # ---------------- Visualization ----------------
-        # Draw only arms and hands.
+        # Choose simulation data from the main arm.
+        if main_arm == 'left':
+            base_yaw = left_yaw
+            shoulder_angle_sim = left_shoulder_angle
+            elbow_angle_sim = left_elbow_angle
+            wrist_angle_sim = left_wrist_angle
+            hand_yaw_sim = left_hand_yaw
+            claw_state_sim = left_claw_state
+        else:
+            base_yaw = right_yaw
+            shoulder_angle_sim = right_shoulder_angle
+            elbow_angle_sim = right_elbow_angle
+            wrist_angle_sim = right_wrist_angle
+            hand_yaw_sim = right_hand_yaw
+            claw_state_sim = right_claw_state
+
+        # ---------------- Map to Mechanical Arm Motors ----------------
+        # Motor 6 (Base rotation): use main arm yaw (0-360°).
+        motor6 = base_yaw
+        # Motor 5 (Shoulder pitch): clamp between 35° and 145°.
+        motor5 = shoulder_angle_sim - 90
+        # Motor 4 (Elbow): use (180 - elbow_angle).
+        motor4 = 180 - elbow_angle_sim
+        # Motor 3 (Wrist pitch): use (180 - wrist_angle).
+        motor3 = 180 - wrist_angle_sim
+        # Motor 2 (Wrist yaw): from hand yaw.
+        motor2 = hand_yaw_sim
+        # Motor 1 (Claw): state ("OPEN" or "CLOSED").
+        # ----------------------------------------------------------------
+
+        # ---------------- Limit the change rate for each motor ----------------
+        # For each motor, update the smoothed value by clamping its change to max_delta.
+        if smoothed_motor6 is None:
+            smoothed_motor6 = motor6
+        else:
+            smoothed_motor6 = clamp_change(smoothed_motor6, motor6, max_delta)
+        if smoothed_motor5 is None:
+            smoothed_motor5 = motor5
+        else:
+            smoothed_motor5 = clamp_change(smoothed_motor5, motor5, max_delta)
+        if smoothed_motor4 is None:
+            smoothed_motor4 = motor4
+        else:
+            smoothed_motor4 = clamp_change(smoothed_motor4, motor4, max_delta)
+        if smoothed_motor3 is None:
+            smoothed_motor3 = motor3
+        else:
+            smoothed_motor3 = clamp_change(smoothed_motor3, motor3, max_delta)
+        if smoothed_motor2 is None:
+            smoothed_motor2 = motor2
+        else:
+            smoothed_motor2 = clamp_change(smoothed_motor2, motor2, max_delta)
+        # ----------------------------------------------------------------
+
+        # ---------------- Draw Skeleton Lines on Camera Feed ----------------
+        # Re-implement the skeleton overlay (colored red/green) on the camera feed.
         if results.pose_landmarks:
             def to_pixel(idx):
                 return (int(results.pose_landmarks.landmark[idx].x * w),
                         int(results.pose_landmarks.landmark[idx].y * h))
 
 
-            # Determine colors: main arm is green, the other is red.
-            left_color = (0, 255, 0) if (results.pose_landmarks.landmark[11].visibility +
-                                         results.pose_landmarks.landmark[13].visibility +
-                                         results.pose_landmarks.landmark[15].visibility) / 3.0 >= \
-                                        (results.pose_landmarks.landmark[12].visibility +
-                                         results.pose_landmarks.landmark[14].visibility +
-                                         results.pose_landmarks.landmark[16].visibility) / 3.0 else (0, 0, 255)
-            right_color = (0, 255, 0) if left_color == (0, 0, 255) else (0, 0, 255)
-            # Draw left arm.
+            # Use the average visibility scores to choose colors.
+            left_score = (results.pose_landmarks.landmark[11].visibility +
+                          results.pose_landmarks.landmark[13].visibility +
+                          results.pose_landmarks.landmark[15].visibility) / 3.0
+            right_score = (results.pose_landmarks.landmark[12].visibility +
+                           results.pose_landmarks.landmark[14].visibility +
+                           results.pose_landmarks.landmark[16].visibility) / 3.0
+            left_color = (0, 255, 0) if left_score >= right_score else (0, 0, 255)
+            right_color = (0, 255, 0) if left_score < right_score else (0, 0, 255)
             cv2.line(frame, to_pixel(11), to_pixel(13), left_color, 2)
             cv2.line(frame, to_pixel(13), to_pixel(15), left_color, 2)
-            # Draw right arm.
             cv2.line(frame, to_pixel(12), to_pixel(14), right_color, 2)
             cv2.line(frame, to_pixel(14), to_pixel(16), right_color, 2)
+        # ----------------------------------------------------------------
 
-            # Display yaw for the main arm.
-            if main_arm == 'left':
-                cv2.putText(frame, f"Yaw: {int(left_yaw)}", (30, 180),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, left_color, 2)
-            else:
-                cv2.putText(frame, f"Yaw: {int(right_yaw)}", (650, 180),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, right_color, 2)
+        # ---------------- Simulation Panel ----------------
+        sim_width, sim_height = 640, 720
+        sim_img = 255 * np.ones((sim_height, sim_width, 3), dtype=np.uint8)
 
-        # Draw hand landmarks.
-        if results.left_hand_landmarks:
-            mp_drawing.draw_landmarks(frame, results.left_hand_landmarks, mp_holistic.HAND_CONNECTIONS)
-        if results.right_hand_landmarks:
-            mp_drawing.draw_landmarks(frame, results.right_hand_landmarks, mp_holistic.HAND_CONNECTIONS)
-        # -------------------------------------------------
+        # Define base point for simulation (centered near bottom).
+        base_point = (sim_width // 2, sim_height - 50)
 
-        # Display computed angles and claw state.
-        cv2.putText(frame, f"L-Shoulder: {int(left_shoulder_angle)}", (30, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        cv2.putText(frame, f"L-Elbow: {int(left_elbow_angle)}", (30, 60),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        cv2.putText(frame, f"L-Wrist: {int(left_wrist_angle)}", (30, 90),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        cv2.putText(frame, f"L-Finger: {int(left_finger_angle)}", (30, 120),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        cv2.putText(frame, f"L-Claw: {left_claw_state}", (30, 150),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        # --- Compute Local Kinematic Chain (Side-View) ---
+        # Compute the chain in a local frame (base at (0,0)),
+        # then rotate by Motor 6 (base rotation) and translate to base_point.
+        L5 = 100  # Motor 5 (shoulder)
+        L4 = 80  # Motor 4 (elbow)
+        L3 = 60  # Motor 3 (wrist)
+        L2 = 40  # Motor 2 (wrist yaw)
 
-        cv2.putText(frame, f"R-Shoulder: {int(right_shoulder_angle)}", (650, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        cv2.putText(frame, f"R-Elbow: {int(right_elbow_angle)}", (650, 60),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        cv2.putText(frame, f"R-Wrist: {int(right_wrist_angle)}", (650, 90),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        cv2.putText(frame, f"R-Finger: {int(right_finger_angle)}", (650, 120),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        cv2.putText(frame, f"R-Claw: {right_claw_state}", (650, 150),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        m5_rad = math.radians(smoothed_motor5)
+        m4_rad = math.radians(smoothed_motor4)
+        m3_rad = math.radians(smoothed_motor3)
+        m2_rad = math.radians(smoothed_motor2)
+        m6_rad = math.radians(smoothed_motor6)
 
-        cv2.imshow("Arm + Hand Detection", frame)
+        p0_local = np.array([0, 0])
+        p1_local = p0_local + np.array([L5 * math.cos(m5_rad), -L5 * math.sin(m5_rad)])
+        p2_local = p1_local + np.array([L4 * math.cos(m5_rad + m4_rad), -L4 * math.sin(m5_rad + m4_rad)])
+        p3_local = p2_local + np.array(
+            [L3 * math.cos(m5_rad + m4_rad + m3_rad), -L3 * math.sin(m5_rad + m4_rad + m3_rad)])
+        p4_local = p3_local + np.array([L2 * math.cos(m2_rad), -L2 * math.sin(m2_rad)])
+
+        R = np.array([[math.cos(m6_rad), -math.sin(m6_rad)],
+                      [math.sin(m6_rad), math.cos(m6_rad)]])
+        p0 = np.dot(R, p0_local) + np.array(base_point)
+        p1 = np.dot(R, p1_local) + np.array(base_point)
+        p2 = np.dot(R, p2_local) + np.array(base_point)
+        p3 = np.dot(R, p3_local) + np.array(base_point)
+        p4 = np.dot(R, p4_local) + np.array(base_point)
+        p0 = (int(p0[0]), int(p0[1]))
+        p1 = (int(p1[0]), int(p1[1]))
+        p2 = (int(p2[0]), int(p2[1]))
+        p3 = (int(p3[0]), int(p3[1]))
+        p4 = (int(p4[0]), int(p4[1]))
+        # -----------------------------------------------------
+
+        # Draw the simulation:
+        cv2.circle(sim_img, p0, 10, (0, 0, 0), -1)
+        cv2.line(sim_img, p0, p1, (255, 0, 0), 4)
+        cv2.line(sim_img, p1, p2, (255, 0, 0), 4)
+        cv2.line(sim_img, p2, p3, (255, 0, 0), 4)
+        cv2.line(sim_img, p3, p4, (255, 0, 0), 4)
+        if claw_state_sim == "OPEN":
+            cv2.line(sim_img, p4, (p4[0] - 15, p4[1] - 15), (0, 0, 255), 4)
+            cv2.line(sim_img, p4, (p4[0] + 15, p4[1] - 15), (0, 0, 255), 4)
+        else:
+            cv2.rectangle(sim_img, (p4[0] - 10, p4[1] - 10), (p4[0] + 10, p4[1] + 10), (0, 0, 255), -1)
+
+        cv2.putText(sim_img, f"M6 (Base): {int(smoothed_motor6)}", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
+        cv2.putText(sim_img, f"M5 (Shoulder): {int(smoothed_motor5)}", (10, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
+        cv2.putText(sim_img, f"M4 (Elbow): {int(smoothed_motor4)}", (10, 90),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
+        cv2.putText(sim_img, f"M3 (Wrist): {int(smoothed_motor3)}", (10, 120),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
+        cv2.putText(sim_img, f"M2 (Wrist Yaw): {int(smoothed_motor2)}", (10, 150),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
+        cv2.putText(sim_img, f"M1 (Claw): {claw_state_sim}", (10, 180),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
+
+        # ---------------- Combine Panels ----------------
+        cam_feed = cv2.resize(frame, (640, 720))
+        combined = np.hstack((sim_img, cam_feed))
+        cv2.imshow("Mechanical Arm Simulation and Camera Feed", combined)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
